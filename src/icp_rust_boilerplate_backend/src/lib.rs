@@ -64,6 +64,11 @@ impl Vehicle {
     }
 }
 
+impl BoundedStorable for Invoice {
+    const MAX_SIZE: u32 = 1024;
+    const IS_FIXED_SIZE: bool = false;
+}
+
 #[derive(candid::CandidType, Serialize, Deserialize, Clone, Default)]
 struct Service {
     id: u64,
@@ -199,11 +204,6 @@ impl Storable for Invoice {
     }
 }
 
-impl BoundedStorable for Invoice {
-    const MAX_SIZE: u32 = 1024;
-    const IS_FIXED_SIZE: bool = false;
-}
-
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> = RefCell::new(
         MemoryManager::init(DefaultMemoryImpl::default())
@@ -283,6 +283,18 @@ struct InvoicePayload {
     amount: u32,
 }
 
+// Helper function to increment ID
+fn increment_id() -> u64 {
+    ID_COUNTER.with(|counter| {
+        let current_value = *counter.borrow().get();
+        counter
+            .borrow_mut()
+            .set(current_value + 1)
+            .expect("Failed to increment ID counter");
+        current_value + 1
+    })
+}
+
 // Functions to create and get entities
 
 #[ic_cdk::update]
@@ -315,15 +327,7 @@ fn create_customer(payload: CustomerPayload) -> Result<Customer, String> {
         return Err("Email already exists".to_string());
     }
 
-    let id = ID_COUNTER.with(|counter| {
-        let current_value = *counter.borrow().get();
-        counter
-            .borrow_mut()
-            .set(current_value + 1)
-            .expect("Failed to increment ID counter");
-        current_value
-    });
-
+    let id = increment_id();
     let customer = Customer::new(id, payload.name, payload.contact, payload.email);
     CUSTOMERS_STORAGE.with(|storage| storage.borrow_mut().insert(customer.id, customer.clone()));
     Ok(customer)
@@ -371,6 +375,27 @@ fn update_customer(id: u64, payload: CustomerPayload) -> Result<Customer, String
     Ok(customer)
 }
 
+// Function to delete a customer
+#[ic_cdk::update]
+fn delete_customer(customer_id: u64) -> Result<(), String> {
+    CUSTOMERS_STORAGE.with(|storage| {
+        if storage.borrow_mut().remove(&customer_id).is_some() {
+            Ok(())
+        } else {
+            Err("Customer not found".to_string())
+        }
+    })
+}
+
+// Function to retrieve a customer by ID
+#[ic_cdk::query]
+fn get_customer_by_id(customer_id: u64) -> Result<Customer, String> {
+    CUSTOMERS_STORAGE.with(|storage| match storage.borrow().get(&customer_id) {
+        Some(customer) => Ok(customer.clone()),
+        None => Err("Customer not found".to_string()),
+    })
+}
+
 // Function to retrieve all customers and throw an error if no customers are found
 #[ic_cdk::query]
 fn get_all_customers() -> Result<Vec<Customer>, String> {
@@ -407,14 +432,37 @@ fn create_vehicle(payload: VehiclePayload) -> Result<Vehicle, String> {
         return Err("Invalid license plate format".to_string());
     }
 
-    let id = ID_COUNTER.with(|counter| {
-        let current_value = *counter.borrow().get();
-        counter
-            .borrow_mut()
-            .set(current_value + 1)
-            .expect("Failed to increment ID counter");
-        current_value
-    });
+    let id = increment_id();
+    let vehicle = Vehicle::new(
+        id,
+        payload.customer_id,
+        payload.make,
+        payload.model,
+        payload.year,
+        payload.license_plate,
+    );
+    VEHICLES_STORAGE.with(|storage| storage.borrow_mut().insert(vehicle.id, vehicle.clone()));
+    Ok(vehicle)
+}
+
+// Function to update a vehicle
+#[ic_cdk::update]
+fn update_vehicle(id: u64, payload: VehiclePayload) -> Result<Vehicle, String> {
+    if payload.make.is_empty() || payload.model.is_empty() || payload.license_plate.is_empty() {
+        return Err("Make, model, and license plate cannot be empty".to_string());
+    }
+
+    // Check if vehicle exists
+    let vehicle_exists = VEHICLES_STORAGE.with(|storage| storage.borrow().contains_key(&id));
+    if !vehicle_exists {
+        return Err("Vehicle ID does not exist.".to_string());
+    }
+
+    // Validate license plate format
+    let license_plate_regex = Regex::new(r"^[A-Z]{2}-\d{2}-[A-Z]{2}-\d{4}$").unwrap();
+    if !license_plate_regex.is_match(&payload.license_plate) {
+        return Err("Invalid license plate format".to_string());
+    }
 
     let vehicle = Vehicle::new(
         id,
@@ -426,6 +474,27 @@ fn create_vehicle(payload: VehiclePayload) -> Result<Vehicle, String> {
     );
     VEHICLES_STORAGE.with(|storage| storage.borrow_mut().insert(vehicle.id, vehicle.clone()));
     Ok(vehicle)
+}
+
+// Function to delete a vehicle
+#[ic_cdk::update]
+fn delete_vehicle(vehicle_id: u64) -> Result<(), String> {
+    VEHICLES_STORAGE.with(|storage| {
+        if storage.borrow_mut().remove(&vehicle_id).is_some() {
+            Ok(())
+        } else {
+            Err("Vehicle not found".to_string())
+        }
+    })
+}
+
+// Function to retrieve a vehicle by ID
+#[ic_cdk::query]
+fn get_vehicle_by_id(vehicle_id: u64) -> Result<Vehicle, String> {
+    VEHICLES_STORAGE.with(|storage| match storage.borrow().get(&vehicle_id) {
+        Some(vehicle) => Ok(vehicle.clone()),
+        None => Err("Vehicle not found".to_string()),
+    })
 }
 
 // Function to retrieve all vehicles, handling the case where no vehicles are found
@@ -458,14 +527,30 @@ fn create_service(payload: ServicePayload) -> Result<Service, String> {
         return Err("Vehicle ID does not exist.".to_string());
     }
 
-    let id = ID_COUNTER.with(|counter| {
-        let current_value = *counter.borrow().get();
-        counter
-            .borrow_mut()
-            .set(current_value + 1)
-            .expect("Failed to increment ID counter");
-        current_value
-    });
+    let id = increment_id();
+    let service = Service::new(
+        id,
+        payload.vehicle_id,
+        payload.description,
+        payload.cost,
+        time(),
+    );
+    SERVICES_STORAGE.with(|storage| storage.borrow_mut().insert(service.id, service.clone()));
+    Ok(service)
+}
+
+// Function to update a service
+#[ic_cdk::update]
+fn update_service(id: u64, payload: ServicePayload) -> Result<Service, String> {
+    if payload.description.is_empty() {
+        return Err("Description cannot be empty".to_string());
+    }
+
+    // Check if service exists
+    let service_exists = SERVICES_STORAGE.with(|storage| storage.borrow().contains_key(&id));
+    if !service_exists {
+        return Err("Service ID does not exist.".to_string());
+    }
 
     let service = Service::new(
         id,
@@ -476,6 +561,27 @@ fn create_service(payload: ServicePayload) -> Result<Service, String> {
     );
     SERVICES_STORAGE.with(|storage| storage.borrow_mut().insert(service.id, service.clone()));
     Ok(service)
+}
+
+// Function to delete a service
+#[ic_cdk::update]
+fn delete_service(service_id: u64) -> Result<(), String> {
+    SERVICES_STORAGE.with(|storage| {
+        if storage.borrow_mut().remove(&service_id).is_some() {
+            Ok(())
+        } else {
+            Err("Service not found".to_string())
+        }
+    })
+}
+
+// Function to retrieve a service by ID
+#[ic_cdk::query]
+fn get_service_by_id(service_id: u64) -> Result<Service, String> {
+    SERVICES_STORAGE.with(|storage| match storage.borrow().get(&service_id) {
+        Some(service) => Ok(service.clone()),
+        None => Err("Service not found".to_string()),
+    })
 }
 
 // Function to retrieve all services, handling the case where no services are found
@@ -501,18 +607,49 @@ fn create_inventory_item(payload: InventoryPayload) -> Result<Inventory, String>
         return Err("Part name cannot be empty".to_string());
     }
 
-    let id = ID_COUNTER.with(|counter| {
-        let current_value = *counter.borrow().get();
-        counter
-            .borrow_mut()
-            .set(current_value + 1)
-            .expect("Failed to increment ID counter");
-        current_value
-    });
+    let id = increment_id();
+    let inventory = Inventory::new(id, payload.part_name, payload.quantity, payload.cost);
+    INVENTORY_STORAGE.with(|storage| storage.borrow_mut().insert(inventory.id, inventory.clone()));
+    Ok(inventory)
+}
+
+// Function to update an inventory item
+#[ic_cdk::update]
+fn update_inventory_item(id: u64, payload: InventoryPayload) -> Result<Inventory, String> {
+    if payload.part_name.is_empty() {
+        return Err("Part name cannot be empty".to_string());
+    }
+
+    // Check if inventory item exists
+    let inventory_exists = INVENTORY_STORAGE.with(|storage| storage.borrow().contains_key(&id));
+    if !inventory_exists {
+        return Err("Inventory ID does not exist.".to_string());
+    }
 
     let inventory = Inventory::new(id, payload.part_name, payload.quantity, payload.cost);
     INVENTORY_STORAGE.with(|storage| storage.borrow_mut().insert(inventory.id, inventory.clone()));
     Ok(inventory)
+}
+
+// Function to delete an inventory item
+#[ic_cdk::update]
+fn delete_inventory_item(inventory_id: u64) -> Result<(), String> {
+    INVENTORY_STORAGE.with(|storage| {
+        if storage.borrow_mut().remove(&inventory_id).is_some() {
+            Ok(())
+        } else {
+            Err("Inventory item not found".to_string())
+        }
+    })
+}
+
+// Function to retrieve an inventory item by ID
+#[ic_cdk::query]
+fn get_inventory_item_by_id(inventory_id: u64) -> Result<Inventory, String> {
+    INVENTORY_STORAGE.with(|storage| match storage.borrow().get(&inventory_id) {
+        Some(inventory) => Ok(inventory.clone()),
+        None => Err("Inventory item not found".to_string()),
+    })
 }
 
 // Function to retrieve the quantity of a specific part name in the inventory
@@ -560,18 +697,45 @@ fn create_invoice(payload: InvoicePayload) -> Result<Invoice, String> {
         return Err("Customer ID does not exist.".to_string());
     }
 
-    let id = ID_COUNTER.with(|counter| {
-        let current_value = *counter.borrow().get();
-        counter
-            .borrow_mut()
-            .set(current_value + 1)
-            .expect("Failed to increment ID counter");
-        current_value
-    });
+    let id = increment_id();
+    let invoice = Invoice::new(id, payload.customer_id, payload.amount, time());
+    INVOICES_STORAGE.with(|storage| storage.borrow_mut().insert(invoice.id, invoice.clone()));
+    Ok(invoice)
+}
+
+// Function to update an invoice
+#[ic_cdk::update]
+fn update_invoice(id: u64, payload: InvoicePayload) -> Result<Invoice, String> {
+    // Check if invoice exists
+    let invoice_exists = INVOICES_STORAGE.with(|storage| storage.borrow().contains_key(&id));
+    if !invoice_exists {
+        return Err("Invoice ID does not exist.".to_string());
+    }
 
     let invoice = Invoice::new(id, payload.customer_id, payload.amount, time());
     INVOICES_STORAGE.with(|storage| storage.borrow_mut().insert(invoice.id, invoice.clone()));
     Ok(invoice)
+}
+
+// Function to delete an invoice
+#[ic_cdk::update]
+fn delete_invoice(invoice_id: u64) -> Result<(), String> {
+    INVOICES_STORAGE.with(|storage| {
+        if storage.borrow_mut().remove(&invoice_id).is_some() {
+            Ok(())
+        } else {
+            Err("Invoice not found".to_string())
+        }
+    })
+}
+
+// Function to retrieve an invoice by ID
+#[ic_cdk::query]
+fn get_invoice_by_id(invoice_id: u64) -> Result<Invoice, String> {
+    INVOICES_STORAGE.with(|storage| match storage.borrow().get(&invoice_id) {
+        Some(invoice) => Ok(invoice.clone()),
+        None => Err("Invoice not found".to_string()),
+    })
 }
 
 // Function to get customer invoices using customer id and sum the invoices
